@@ -16,7 +16,7 @@ This mode tries to work well with evil-mode, just set *aria2-add-evil-quirks* to
   (push
    `(:name aria2
            :type git
-           :url "https://gitlab.com/ukaszg/aria2.git")
+           :url "https://github.com/ukaszg/aria2")
    el-get-sources)
 
   (el-get 'sync '(aria2))

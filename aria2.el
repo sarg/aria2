@@ -1,14 +1,14 @@
-;;; aria2.el --- Control aria2c commandline tool from Emacs
+;;; aria2.el --- Control aria2c commandline tool  -*- lexical-binding: t; -*-
 
 ;; Copyright (c) 2014 Łukasz Gruner
 
 ;; Author: Łukasz Gruner <lukasz@gruner.lu>
 ;; Maintainer: Łukasz Gruner <lukasz@gruner.lu>
 ;; Version: 2
-;; Package-Requires: ((emacs "25.1"))
-;; URL: https://bitbucket.org/ukaszg/aria2-mode
+;; Package-Requires: ((emacs "26.1"))
+;; URL: https://github.com/ukaszg/aria2-mode
 ;; Created: 19/10/2014
-;; Keywords: download bittorrent aria2
+;; Keywords: comm, files
 
 ;; This file is not part of Emacs.
 
@@ -27,24 +27,18 @@
 
 
 ;;; Commentary:
+;; This package provides a `tabulated-list-mode' interface for the Aria2
+;; download utility.
 
 ;;; Code:
 
+(require 'xdg)
 (require 'eieio-base)
 (require 'json)
 (require 'url)
 (require 'subr-x)
+(require 'wid-edit)
 (require 'tabulated-list)
-
-(unless (fboundp 'alist-get)
-    (defun alist-get (key alist &optional default remove)
-        "Get the value associated to KEY in ALIST.
-DEFAULT is the value to return if KEY is not found in ALIST.
-REMOVE, if non-nil, means that when setting this element, we should
-remove the entry if the new value is `eql' to DEFAULT."
-        (ignore remove) ;;Silence byte-compiler.
-        (let ((x (assq key alist)))
-            (if x (cdr x) default))))
 
 ;;; Customization variables start here.
 
@@ -77,28 +71,30 @@ If nil Emacs will reattach itself to the process on entering downloads list."
     :group 'aria2)
 
 (defcustom aria2-session-file (expand-file-name "aria2c.session" user-emacs-directory)
-    "Name of session file.  Will be used with \"--save-session\"
-and \"--input-file\" options."
+    "Name of session file.
+Will be used with \"--save-session\" and \"--input-file\" options."
     :type 'file
     :group 'aria2)
 
-(defcustom aria2-download-directory (or (getenv "XDG_DOWNLOAD_DIR") (expand-file-name "~/"))
+(defcustom aria2-download-directory (or (xdg-user-dir "DOWNLOAD") (expand-file-name "~/"))
     "Default directory to store downloaded files."
     :type 'directory
     :group 'aria2)
 
-(defcustom aria2-rcp-listen-port 6800
-    "Port on which JSON RCP server will listen."
+(define-obsolete-variable-alias 'aria2-rcp-listen-port 'aria2-rpc-listen-port "20260122")
+(defcustom aria2-rpc-listen-port 6800
+    "Port on which JSON RPC server will listen."
     :type '(integer :tag "Http port")
     :group 'aria2)
 
-(defcustom aria2-rcp-secret (or (let ((uuidgen (executable-find "uuidgen")))
+(define-obsolete-variable-alias 'aria2-rcp-secret 'aria2-rpc-secret "20260122")
+(defcustom aria2-rpc-secret (or (let ((uuidgen (executable-find "uuidgen")))
                                     (and uuidgen (string-trim (shell-command-to-string uuidgen))))
                                 (sha1 (format "%s%s%s%s%s%s%s%s%s" (user-uid) (emacs-pid) (system-name)
                                           (user-full-name) (current-time) (emacs-uptime) (buffer-string)
                                           (random) (recent-keys))))
-    "Secret value used for authentication with the aria2c process, for use with --rpc-secret= switch."
-    :type '(integer :tag "Http port")
+    "Secret value used for authentication with the aria2c process."
+    :type 'string
     :group 'aria2)
 
 (defcustom aria2-custom-args nil
@@ -108,7 +104,9 @@ See aria2c manual for supported options."
     :group 'aria2)
 
 (defcustom aria2-add-evil-quirks nil
-    "If t adds aria2-mode to emacs states, and binds \C-w.")
+    "If t adds aria2-mode to emacs states, and binds C-w."
+    :type 'boolean
+    :group 'aria2)
 
 (defcustom aria2-cc-file (expand-file-name "aria2-controller.eieio" user-emacs-directory)
     "File used to persist controller status between Emacs restarts."
@@ -171,7 +169,7 @@ See aria2c manual for supported options."
 ;;; Utils start here.
 
 (defsubst aria2--url ()
-    (format "http://localhost:%d/jsonrpc" aria2-rcp-listen-port))
+    (format "http://localhost:%d/jsonrpc" aria2-rpc-listen-port))
 
 (defun aria2--base64-encode-file (path)
     "Return base64-encoded string with contents of file on PATH."
@@ -242,16 +240,16 @@ See aria2c manual for supported options."
 ;;; Aria2c process controller starts here.
 
 (defclass aria2-controller (eieio-persistent)
-    ((request-id :initarg :request-id
+    ((request-id
          :initform 0
          :type integer
          :docstring "Value of id field in JSONRPC data, gets incremented for each request.")
-        (rcp-url :initarg :rcp-url
-            :initform (aria2--url)
+        (rpc-url
+            :initform (funcall #'aria2--url)
             :type string
             :docstring "Url on which aria2c listens for JSON RPC requests.")
         (secret :initarg :secret
-            :initform (concat aria2-rcp-secret)
+            :initform (concat aria2-rpc-secret)
             :type string
             :docstring "Secret value used for authentication with the aria2c process, for use with --rpc-secret= switch.")
         (pid :initarg :pid
@@ -263,19 +261,16 @@ See aria2c manual for supported options."
 ;;; Internal methods start here.
 
 (cl-defmethod get-next-id ((this aria2-controller))
-    "Return next request id json form. Resets back to 1 upon reaching `most-positive-fixnum'"
+    "Return next request id."
     (let ((id (1+ (oref this request-id))))
-        (oset this request-id (if (equal id most-positive-fixnum) 0 id))
+        (oset this request-id id)
         id))
 
 (cl-defmethod is-process-running ((this aria2-controller))
     "Returns status of aria2c process."
     (with-slots (pid) this
         (when aria2--debug (message "aria2 pid %d" pid))
-        (when (and
-                  (< 0 pid)
-                  (aria2--is-aria-process-p pid))
-            t)))
+        (and (< 0 pid) (aria2--is-aria-process-p pid))))
 
 (cl-defmethod run-process ((this aria2-controller))
     "Starts aria2c process, if not already running."
@@ -286,7 +281,7 @@ See aria2c manual for supported options."
                                `("-D" ;; Start in daemon mode (won't be managed by Emacs).
                                     "--enable-rpc=true"
                                     ,(format "--rpc-secret=%s" (oref this secret))
-                                    ,(format "--rpc-listen-port=%s" aria2-rcp-listen-port)
+                                    ,(format "--rpc-listen-port=%s" aria2-rpc-listen-port)
                                     ,(format "--dir=%s" aria2-download-directory)
                                     ,(format "--save-session=%s" aria2-session-file)
                                     ,(when (file-exists-p aria2-session-file)
@@ -319,7 +314,7 @@ See aria2c manual for supported options."
              url-history-track
              json-response)
         (when aria2--debug (message "SEND: %s" url-request-data))
-        (with-current-buffer (url-retrieve-synchronously (oref this rcp-url) t)
+        (with-current-buffer (url-retrieve-synchronously (oref this rpc-url) t)
             ;; expect unicode response
             (set-buffer-multibyte t)
             ;; read last line, where json response is
@@ -345,8 +340,8 @@ When sending magnet link, URLS must have only one element."
     (unless (string-match-p "\\.torrent$" path)
         (signal 'aria2-err-not-a-torrent-file nil))
     (make-request this "aria2.addTorrent" (aria2--base64-encode-file path) []
-                  `(,@(if select-file `(:select-file ,select-file) '())
-                    ,@(if dir `(:dir ,dir) '()))))
+        `(,@(if select-file `(:select-file ,select-file) '())
+             ,@(if dir `(:dir ,dir) '()))))
 
 (cl-defmethod addMetalink ((this aria2-controller) path)
     "Add local .metalink PATH to download list."
@@ -357,11 +352,13 @@ When sending magnet link, URLS must have only one element."
     (make-request this "aria2.addMetalink" (aria2--base64-encode-file path)))
 
 (cl-defmethod remove-download ((this aria2-controller) gid &optional force)
-    "Remove download identified by GID. If FORCE don't unregister download at bittorrent tracker."
+    "Remove download identified by GID.
+If FORCE don't unregister download at bittorrent tracker."
     (make-request this (if force "aria2.forceRemove" "aria2.remove") gid))
 
 (cl-defmethod pause ((this aria2-controller) gid &optional force)
-    "Pause download identified by GID. If FORCE don't unregister download at bittorrent tracker."
+    "Pause download identified by GID.
+If FORCE don't unregister download at bittorrent tracker."
     (make-request this (if force "aria2.forcePause" "aria2.pause") gid))
 
 (cl-defmethod pauseAll ((this aria2-controller) &optional force)
@@ -393,21 +390,15 @@ When sending magnet link, URLS must have only one element."
     (make-request this "aria2.tellStopped" (or offset 0) (or num most-positive-fixnum) keys))
 
 (cl-defmethod changePosition ((this aria2-controller) gid pos &optional how)
-    "Change position of a download denoted by GID. POS is a number. HOW is one of:
-\"POS_SET\" - sets file to POS position from the beginning of a list (first element is 0),
+    "Change position of a download denoted by GID.
+POS is a number. HOW is one of:
+\"POS_SET\" - set absolute position in the list,
 \"POS_CUR\" - moves file by POS places relative to it's current position,
 \"POS_END\" - sets file to POS position relative to end of list.
 If nil defaults to \"POS_CUR\"."
-    (unless (or (null how) (member how '("POS_SET" "POS_CUR" "POS_END")))
+    (unless (member how '(nil "POS_SET" "POS_CUR" "POS_END"))
         (signal 'aria2-err-no-such-position-type (list how)))
     (make-request this "aria2.changePosition" gid pos (or how "POS_CUR")))
-
-(cl-defmethod changeUri ((this aria2-controller) gid file-index del-uris add-uris &optional position)
-    "This method removes the URIs in DEL-URIS list and appends the URIs in ADD-URIS list to download denoted by GID.
-FILE-INDEX is 1-based position, identifying a file in a download.
-POSITION is a 0-based index specifying where URIs are inserted in waiting list.
-Returns a pair of numbers denoting amount of files deleted and files inserted."
-    (make-request this "aria2.changeUri" gid file-index del-uris add-uris (or position 0)))
 
 (cl-defmethod getOption ((this aria2-controller) gid)
     "This method returns options of the download denoted by GID."
@@ -418,11 +409,13 @@ Returns a pair of numbers denoting amount of files deleted and files inserted."
     (make-request this "aria2.changeOption" gid options))
 
 (cl-defmethod getGlobalOption ((this aria2-controller))
-    "Return an alist of global options. Global options are used as defaults for newly added files."
+    "Return an alist of global options.
+Global options are used as defaults for newly added files."
     (make-request this "aria2.getGlobalOptions"))
 
 (cl-defmethod changeGlobalOption ((this aria2-controller) options)
-    "Changes default global opts to OPTIONS. OPTIONS is an alist of opt-name and value."
+    "Change default global opts to OPTIONS.
+OPTIONS is an alist of opt-name and value."
     (make-request this "aria2.changeGlobalOption" options))
 
 (cl-defmethod getGlobalStat ((this aria2-controller))
@@ -478,10 +471,10 @@ Returns a pair of numbers denoting amount of files deleted and files inserted."
     "Default list of keys for use in aria2.tell* calls.")
 
 (defvar aria2--master-timer nil
-    "Holds a timer object that dynamically manages frequency of `aria2--refresh-timer', depending on visibility and focused state.")
+    "Timer object that manages frequency of `aria2--refresh-timer'.")
 
 (defvar aria2--refresh-timer nil
-    "Holds a timer object that refreshes downloads list periodically.")
+    "Timer object that refreshes downloads list periodically.")
 
 (defsubst aria2--list-entries-File (e)
     (let ((bt (alist-get 'bittorrent e)))
@@ -513,19 +506,7 @@ Returns a pair of numbers denoting amount of files deleted and files inserted."
     (format "%.2f kB" (/ (string-to-number (alist-get 'uploadSpeed e)) 1024)))
 
 (defsubst aria2--list-entries-Size (e)
-    (let ((size (string-to-number (alist-get 'totalLength e))))
-        (if (< size 1024)
-            (format "%.2f B" size)
-            (setq size (/ size 1024))
-            (if (< size 1024)
-                (format "%.2f kB" size)
-                (setq size (/ size 1024))
-                (if (< size 1024)
-                    (format "%.2f MB" size)
-                    (setq size (/ size 1024))
-                    (if (< size 1024)
-                        (format "%.2f GB" size)
-                        (format "%2.f TB" (/ size 1024))))))))
+    (file-size-human-readable (string-to-number (alist-get 'totalLength e))))
 
 (defsubst aria2--list-entries-Err (e)
     (let ((err (alist-get 'errorCode e)))
@@ -544,14 +525,14 @@ Returns a pair of numbers denoting amount of files deleted and files inserted."
             (push (list
                       (alist-get 'gid e)
                       (vector
-                          (list (aria2--list-entries-File e)     'face 'aria2-file-face)
-                          (list (aria2--list-entries-Status e)   'face 'aria2-status-face)
-                          (list (aria2--list-entries-Type e)     'face 'aria2-type-face)
-                          (list (aria2--list-entries-Done e)     'face 'aria2-done-face)
-                          (list (aria2--list-entries-Download e) 'face 'aria2-download-face)
-                          (list (aria2--list-entries-Upload e)   'face 'aria2-upload-face)
+                          (propertize (aria2--list-entries-File e) 'face 'aria2-entry-face)
+                          (propertize (aria2--list-entries-Status e) 'face 'aria2-status-face)
+                          (propertize (aria2--list-entries-Type e) 'face 'aria2-type-face)
+                          (propertize (aria2--list-entries-Done e) 'face 'aria2-done-face)
+                          (propertize (aria2--list-entries-Download e) 'face 'aria2-download-face)
+                          (propertize (aria2--list-entries-Upload e) 'face 'aria2-upload-face)
                           (aria2--list-entries-Size e)
-                          (list (aria2--list-entries-Err e)      'face 'aria2-error-face)))
+                          (propertize (aria2--list-entries-Err e) 'face 'aria2-error-face)))
                 entries))))
 
 ;;; Refresh settings start here
@@ -563,23 +544,22 @@ Returns a pair of numbers denoting amount of files deleted and files inserted."
     :type  '(integer :tag "Number of seconds"))
 
 (defcustom aria2-refresh-normal 8
-    "Timeout after list is refreshed, when it doesn't have focus, but its buffer is visible."
+    "Refresh delay when the buffer is visible but not focused."
     :group 'aria2
     :group 'timer
     :type  '(integer :tag "Number of seconds"))
 
 (defcustom aria2-refresh-slow 20
-    "Timeout after list is refreshed, when it doesn't have focus and it's buffer is not visible."
+    "Refresh delay when the buffer is not visible."
     :group 'aria2
     :group 'timer
     :type  '(integer :tag "Number of seconds"))
 
 (defvar aria2--current-buffer-refresh-speed nil
-    "One of :fast :normal :slow or nil if not refreshing. Used to manage refresh timers.")
+    "One of :fast :normal :slow or nil if not refreshing.")
 
 (defun aria2--manage-refresh-timer ()
-    "Restarts `aria2--refresh-timer' on different intervals,
-depending on focus and buffer visibility."
+    "Restart `aria2--refresh-timer' according to buffer visibility and focus."
     (let ((buf (get-buffer aria2-list-buffer-name)))
         (cl-flet ((retimer (refresh speed)
                       (when aria2--refresh-timer (cancel-timer aria2--refresh-timer))
@@ -604,7 +584,7 @@ depending on focus and buffer visibility."
             aria2--master-timer nil)))
 
 (defun aria2--refresh ()
-    "Refreshes download list buffer. Or stops refresh timers if buffer doesn't exist."
+    "Refresh download list buffer.  Stop refresh timers if buffer doesn't exist."
     (let ((buf (get-buffer aria2-list-buffer-name)))
         (if buf
             (with-current-buffer buf (revert-buffer))
@@ -620,39 +600,31 @@ depending on focus and buffer visibility."
             (delete-file aria2-cc-file))))
 
 (defun aria2--kill-on-exit ()
-    "Stops aria2c process."
+    "Stop aria2c process."
     (aria2--stop-timer)
     (when aria2--cc
         (shutdown aria2--cc t)))
 
-(defun aria2-maybe-add-evil-quirks ()
-    "Keep aria2-mode in EMACS state, as we already define j/k movement and add C-w * commands."
-    (when aria2-add-evil-quirks
-        (with-eval-after-load 'evil-states
-            (add-to-list 'evil-emacs-state-modes 'aria2-mode)
-            (add-to-list 'evil-emacs-state-modes 'aria2-dialog-mode))
-        (with-eval-after-load 'evil-maps
-            (define-key aria2-mode-map "\C-w" 'evil-window-map))))
-
 ;; Interactive commands start here
 
 (defsubst aria2--is-paused-p ()
-    (string= "paused" (car (elt (tabulated-list-get-entry) 1))))
+    "Return t if the current entry is paused."
+    (string= "paused" (elt (tabulated-list-get-entry) 1)))
 
 (defun aria2-pause ()
     "Pause download."
     (interactive)
-    (pause aria2--cc (get-text-property (point) 'tabulated-list-id))
+    (pause aria2--cc (tabulated-list-get-id))
     (message "Pausing download. This may take a moment..."))
 
 (defun aria2-resume ()
     "Resume paused download."
     (interactive)
-    (unpause aria2--cc (get-text-property (point) 'tabulated-list-id))
+    (unpause aria2--cc (tabulated-list-get-id))
     (revert-buffer))
 
 (defun aria2-toggle-pause ()
-    "Toggle 'paused' status for download."
+    "Toggle `paused' status for download."
     (interactive)
     (if (aria2--is-paused-p)
         (aria2-resume)
@@ -666,9 +638,9 @@ depending on focus and buffer visibility."
     (or (file-directory-p f)
         (string-match-p aria2-supported-file-extension-regexp f)))
 
-(defun aria2-add-file (arg)
+(defun aria2-add-file ()
     "Prompt for a file and add it. Supports .torrent .meta4 and .metalink files."
-    (interactive "P")
+    (interactive)
     (let ((chosen-file
               (expand-file-name
                   (read-file-name
@@ -682,16 +654,22 @@ depending on focus and buffer visibility."
                 (addMetalink aria2--cc chosen-file))))
     (revert-buffer))
 
+(defvar aria2--url-list-widget nil)
+(defconst aria2-url-list-buffer-name  "*aria2: Add http/https/ftp/magnet url(s)*"
+    "Name of a buffer for inputting url's to download.")
+
 (defun aria2-dialog-cancel ()
-  (interactive)
-  (setq aria2--url-list-widget nil)
-  (switch-to-buffer aria2-list-buffer-name)
-  (kill-buffer aria2-url-list-buffer-name))
+    "Close url input dialog."
+    (interactive)
+    (setq aria2--url-list-widget nil)
+    (switch-to-buffer aria2-list-buffer-name)
+    (kill-buffer aria2-url-list-buffer-name))
 
 (defun aria2-dialog-submit ()
-  (interactive)
-  (addUri aria2--cc (widget-value aria2--url-list-widget))
-  (aria2-dialog-cancel))
+    "Add provided uri and close the dialog."
+    (interactive)
+    (addUri aria2--cc (widget-value aria2--url-list-widget))
+    (aria2-dialog-cancel))
 
 (defvar aria2-dialog-mode-map
     (let ((map (make-sparse-keymap)))
@@ -701,13 +679,8 @@ depending on focus and buffer visibility."
         (define-key map (kbd "C-c C-k") 'aria2-dialog-cancel)
         map))
 
-(defvar aria2--url-list-widget nil)
-
 (defconst aria2-supported-url-protocols-regexp "\\(?:ftp://\\|http\\(?:s?://\\)\\|magnet:\\)"
     "Regexp matching frp, http, https and magnet urls.")
-
-(defconst aria2-url-list-buffer-name  "*aria2: Add http/https/ftp/magnet url(s)*"
-    "Name of a buffer for inputting url's to download.")
 
 (define-derived-mode aria2-dialog-mode fundamental-mode "Add urls"
     "Major moe for adding download urls.")
@@ -733,11 +706,10 @@ depending on focus and buffer visibility."
                  :value "")))
     (widget-insert "\n\n")
     (widget-create 'push-button
-        :notify (lambda (&rest ignore) (aria2-dialog-cancel))
-                   "Cancel")
+        :notify (lambda (&rest _) (aria2-dialog-cancel)) "Cancel")
     (widget-insert "  ")
     (widget-create 'push-button
-        :notify (lambda (&rest ignore) (aria2-dialog-submit))
+        :notify (lambda (&rest _) (aria2-dialog-submit))
         "Download")
     (widget-insert "\n")
     (widget-setup)
@@ -745,33 +717,31 @@ depending on focus and buffer visibility."
     (widget-forward 3))
 
 (defun aria2-remove-download (arg)
-    "Set download status to 'removed'."
+    "Set download status to `removed'."
     (interactive "P")
     (when (y-or-n-p "Really remove download? ")
-        (remove-download aria2--cc (get-text-property (point) 'tabulated-list-id) (not (equal nil arg)))
+        (remove-download aria2--cc (tabulated-list-get-id) arg)
         (tabulated-list-delete-entry)))
 
 (defun aria2-clean-removed-download (arg)
-    "Clean download with 'removed/completed/error' status.
+    "Clean download with `removed/completed/error' status.
 With prefix remove all applicable downloads."
     (interactive "P")
-    (if (equal nil arg)
-        (progn
-            (removeDownloadResult aria2--cc (get-text-property (point) 'tabulated-list-id))
-            (revert-buffer))
+    (if arg
         (purgeDownloadResult aria2--cc)
-        (revert-buffer)))
+        (removeDownloadResult aria2--cc (tabulated-list-get-id)))
+    (revert-buffer))
 
 (defun aria2-move-up-in-list (arg)
     "Move item one row up, with prefix move to beginning of list."
     (interactive "P")
-    (changePosition aria2--cc (get-text-property (point) 'tabulated-list-id) (if (equal nil arg) -1 0) (if (equal nil arg) "POS_CUR" "POS_SET"))
+    (changePosition aria2--cc (tabulated-list-get-id) (if arg 0 -1) (if arg "POS_SET" "POS_CUR"))
     (revert-buffer))
 
 (defun aria2-move-down-in-list (arg)
     "Move item one row down, with prefix move to end of list."
     (interactive "P")
-    (changePosition aria2--cc (get-text-property (point) 'tabulated-list-id) (if (equal nil arg) 1 0) (if (equal nil arg) "POS_CUR" "POS_END"))
+    (changePosition aria2--cc (tabulated-list-get-id) (if arg 0 1) (if arg "POS_END" "POS_CUR"))
     (revert-buffer))
 
 (defun aria2-terminate ()
@@ -849,6 +819,16 @@ With prefix remove all applicable downloads."
         map)
     "Keymap for `aria2-mode'.")
 
+(defun aria2-maybe-add-evil-quirks ()
+    "Install evil quirks when requested."
+    (when aria2-add-evil-quirks
+        (defvar evil-emacs-state-modes)
+        (with-eval-after-load 'evil-states
+            (add-to-list 'evil-emacs-state-modes 'aria2-mode)
+            (add-to-list 'evil-emacs-state-modes 'aria2-dialog-mode))
+        (with-eval-after-load 'evil-maps
+            (define-key aria2-mode-map "\C-w" 'evil-window-map))))
+
 (defcustom aria2-mode-hook nil
     "Hook ran afer enabling `aria2-mode'."
     :type 'hook
@@ -863,8 +843,8 @@ With prefix remove all applicable downloads."
     ;; try to load controller state from file
     (unless aria2--cc
         (condition-case nil
-            (setq aria2--cc (eieio-persistent-read aria2-cc-file aria2-controller))
-            (error (setq aria2--cc (make-instance aria2-controller
+            (setq aria2--cc (eieio-persistent-read aria2-cc-file 'aria2-controller))
+            (error (setq aria2--cc (make-instance 'aria2-controller
                                        "aria2-controller"
                                        :file aria2-cc-file)))))
     (when aria2-start-rpc-server
@@ -902,6 +882,7 @@ With prefix remove all applicable downloads."
 ;; coding: utf-8-unix
 ;; indent-tabs-mode: nil
 ;; lisp-body-indent: 4
+;; lisp-indent-offset: 4
 ;; End:
 
 ;;; aria2.el ends here
