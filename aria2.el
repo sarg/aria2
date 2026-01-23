@@ -118,7 +118,7 @@ See aria2c manual for supported options."
 
 ;;; Faces definitions start here.
 
-(defface aria2-file `((t :inherit mode-line-buffer-id))
+(defface aria2-entry `((t :inherit button))
     "Face for download name."
     :group 'aria2
     :group 'face)
@@ -460,10 +460,38 @@ OPTIONS is an alist of opt-name and value."
 
 (defvar aria2--cc nil "Control center object container.")
 
-(defconst aria2--list-format (vector
-                                 '("File" 40 t) '("Status" 7 t) '("Type" 13 t)
-                                 '("Done" 4 t) '("Download" 12 t) '("Upload" 12 t)
-                                 '("Size" 10 nil) '("Error" 0 nil))
+(defsubst aria2--default-sort (A B n)
+    "Compare Nth column text or sortval for rows A and B."
+    (let* (
+              (a (aref (cadr A) n)) (a (if (stringp a) a (car a)))
+              (b (aref (cadr B) n)) (b (if (stringp b) b (car b)))
+              (a (or (get-text-property 0 'sortval a) a))
+              (b (or (get-text-property 0 'sortval b) b))
+              (cmp (compare-strings a nil nil b nil nil)))
+        (if (eq t cmp) 0 cmp)))
+
+(defun aria2--grouped-sorter (A B)
+    "Compare rows A and B grouping-aware by currently selected column."
+    (let* (
+              (n (tabulated-list--column-number (car tabulated-list-sort-key)))
+              (flip (cdr tabulated-list-sort-key))
+              (pA (if (stringp (car A)) A (get-text-property 0 'parent (aref (cadr A) 1))))
+              (pB (if (stringp (car B)) B (get-text-property 0 'parent (aref (cadr B) 1))))
+              (same-parent (eq pA pB)))
+        (if same-parent
+            (cond
+                ((eq pA A) (not flip))
+                ((eq pB B) flip)
+                (t (< (aria2--default-sort A B n) 0)))
+            (let ((cmp (aria2--default-sort pA pB n)))
+                (if (= 0 cmp) (string< (car pA) (car pB)) (< cmp 0))))))
+
+(defconst aria2--list-format
+    (vector
+        '("File" 40 aria2--grouped-sorter) '("Status" 7 aria2--grouped-sorter)
+        '("Type" 13 aria2--grouped-sorter) '("Done" 4 aria2--grouped-sorter)
+        '("Download" 12 aria2--grouped-sorter) '("Upload" 12 aria2--grouped-sorter)
+        '("Size" 10 aria2--grouped-sorter) '("Error" 0 nil))
     "Format for downloads list columns.")
 
 (defconst aria2--tell-keys
@@ -492,8 +520,8 @@ OPTIONS is an alist of opt-name and value."
             (and (< 0 (length uris)) (car-safe (split-string (alist-get 'uri (elt uris 0)) ":"))))
         "unknown"))
 
-(defsubst aria2--list-entries-Done (e)
-    (let ((total (float (string-to-number (alist-get 'totalLength e))))
+(defsubst aria2--list-entries-Done (e l)
+    (let ((total (float (string-to-number (alist-get l e))))
              (completed (float (string-to-number (alist-get 'completedLength e)))))
         (if (>= 0 total)
             "-"
@@ -505,13 +533,45 @@ OPTIONS is an alist of opt-name and value."
 (defsubst aria2--list-entries-Upload (e)
     (format "%.2f kB" (/ (string-to-number (alist-get 'uploadSpeed e)) 1024)))
 
-(defsubst aria2--list-entries-Size (e)
-    (file-size-human-readable (string-to-number (alist-get 'totalLength e))))
+(defsubst aria2--list-entries-Size (e l)
+    (let ((len (alist-get l e)))
+        (propertize (file-size-human-readable (string-to-number len)) 'sortval (format "%10s" len))))
 
 (defsubst aria2--list-entries-Err (e)
     (let ((err (alist-get 'errorCode e)))
         (or (and err (aria2--decode-error err))
             " - ")))
+
+(defvar-local aria2--expanded-entries nil
+    "Entries that should display containing files.")
+
+(defun aria2--expand-entry (btn)
+    (let ((gid (tabulated-list-get-id btn)))
+        (if (member gid aria2--expanded-entries)
+            (setq aria2--expanded-entries
+                (delete gid aria2--expanded-entries))
+            (push gid aria2--expanded-entries)))
+    (revert-buffer))
+
+(defun aria2--entry-file (f parent trim-left)
+    (let-alist f
+        (list
+            (cons (car parent) .index)
+            (vector
+                (list
+                    (if (string-empty-p .path) " -"
+                        (concat " " (substring .path trim-left nil)))
+                    'face 'default
+                    'action (lambda (_) (dired-jump nil .path)))
+
+            (propertize
+                (if (string= "false" .selected) "∅" "✓")
+                'parent parent)
+            ""
+            (aria2--list-entries-Done f 'length)
+            "" ""
+            (aria2--list-entries-Size f 'length)
+            ""))))
 
 (defun aria2--list-entries ()
     "Return entries to be displayed in downloads list."
@@ -525,15 +585,26 @@ OPTIONS is an alist of opt-name and value."
             (push (list
                       (alist-get 'gid e)
                       (vector
-                          (propertize (aria2--list-entries-File e) 'face 'aria2-entry)
+                          (list (aria2--list-entries-File e) 'action #'aria2--expand-entry)
                           (propertize (aria2--list-entries-Status e) 'face 'aria2-status)
                           (propertize (aria2--list-entries-Type e) 'face 'aria2-type)
-                          (propertize (aria2--list-entries-Done e) 'face 'aria2-done)
+                          (propertize (aria2--list-entries-Done e 'totalLength) 'face 'aria2-done)
                           (propertize (aria2--list-entries-Download e) 'face 'aria2-download)
                           (propertize (aria2--list-entries-Upload e) 'face 'aria2-upload)
-                          (aria2--list-entries-Size e)
+                          (aria2--list-entries-Size e 'totalLength)
                           (propertize (aria2--list-entries-Err e) 'face 'aria2-error)))
-                entries))))
+                entries)
+            (when (member (caar entries) aria2--expanded-entries)
+                (let* ((dir (alist-get 'dir e))
+                          (parent (car (aref (cadar entries) 0)))
+                          (prefix-len (+ (1+ (length dir))
+                                          (if (alist-get 'bittorrent e) (1+ (length parent)) 0))))
+                    (thread-last
+                        (alist-get 'files e)
+                        (seq-filter (lambda (f) (string= "true" (alist-get 'selected f))))
+                        (mapcar (lambda (f) (aria2--entry-file f (car entries) prefix-len)))
+                        (append entries)
+                        (setq entries)))))))
 
 ;;; Refresh settings start here
 
@@ -854,6 +925,7 @@ With prefix remove all applicable downloads."
         (add-hook 'kill-emacs-hook 'aria2--kill-on-exit)
         (add-hook 'kill-emacs-hook 'aria2--persist-settings-on-exit))
     ;; list settings
+    (setq tabulated-list-sort-key '("File"))
     (setq tabulated-list-format aria2--list-format)
     (tabulated-list-init-header)
     (setq tabulated-list-entries #'aria2--list-entries)
