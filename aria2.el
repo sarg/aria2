@@ -118,50 +118,50 @@ See aria2c manual for supported options."
 
 ;;; Faces definitions start here.
 
-(defface aria2-file-face `((t :inherit mode-line-buffer-id))
+(defface aria2-file `((t :inherit mode-line-buffer-id))
     "Face for download name."
     :group 'aria2
     :group 'face)
 
-(defface aria2-status-face `((t :inherit font-lock-constant-face))
+(defface aria2-status `((t :inherit font-lock-constant-face))
     "Face for status."
     :group 'aria2
     :group 'face)
 
-(defface aria2-type-face `((t :inherit font-lock-builtin-face))
+(defface aria2-type `((t :inherit font-lock-builtin-face))
     "Face for download type."
     :group 'aria2
     :group 'face)
 
-(defface aria2-done-face `((t :inherit font-lock-doc-face))
+(defface aria2-done `((t :inherit font-lock-doc-face))
     "Face for % done."
     :group 'aria2
     :group 'face)
 
-(defface aria2-download-face `((t :inherit font-lock-string-face))
+(defface aria2-download `((t :inherit font-lock-string-face))
     "Face for download speed."
     :group 'aria2
     :group 'face)
 
-(defface aria2-upload-face `((t :inherit font-lock-comment-face))
+(defface aria2-upload `((t :inherit font-lock-comment-face))
     "Face for upload speed."
     :group 'aria2
     :group 'face)
 
-(defface aria2-error-face `((t :inherit font-lock-warning-face))
+(defface aria2-error `((t :inherit font-lock-warning-face))
     "Face for error messages."
     :group 'aria2
     :group 'face)
 
-(defface aria2-modeline-key-face `((t :inherit font-lock-warning-face))
+(defface aria2-modeline-key `((t :inherit font-lock-warning-face))
     "Face for shortcut hints displayed in mode-line."
     :group 'aria2
     :group 'face)
 
-(defface aria2-modeline-mouse-face `((t :inherit default
-                                         :box (:line-width 2 :style pressed-button)
-                                         :inverse-video t
-                                         :weight bold))
+(defface aria2-modeline-mouse `((t :inherit default
+                                    :box (:line-width 2 :style pressed-button)
+                                    :inverse-video t
+                                    :weight bold))
     "Face for shortcuts hoovered by a pointer."
     :group 'aria2
     :group 'face)
@@ -525,14 +525,14 @@ OPTIONS is an alist of opt-name and value."
             (push (list
                       (alist-get 'gid e)
                       (vector
-                          (propertize (aria2--list-entries-File e) 'face 'aria2-entry-face)
-                          (propertize (aria2--list-entries-Status e) 'face 'aria2-status-face)
-                          (propertize (aria2--list-entries-Type e) 'face 'aria2-type-face)
-                          (propertize (aria2--list-entries-Done e) 'face 'aria2-done-face)
-                          (propertize (aria2--list-entries-Download e) 'face 'aria2-download-face)
-                          (propertize (aria2--list-entries-Upload e) 'face 'aria2-upload-face)
+                          (propertize (aria2--list-entries-File e) 'face 'aria2-entry)
+                          (propertize (aria2--list-entries-Status e) 'face 'aria2-status)
+                          (propertize (aria2--list-entries-Type e) 'face 'aria2-type)
+                          (propertize (aria2--list-entries-Done e) 'face 'aria2-done)
+                          (propertize (aria2--list-entries-Download e) 'face 'aria2-download)
+                          (propertize (aria2--list-entries-Upload e) 'face 'aria2-upload)
                           (aria2--list-entries-Size e)
-                          (propertize (aria2--list-entries-Err e) 'face 'aria2-error-face)))
+                          (propertize (aria2--list-entries-Err e) 'face 'aria2-error)))
                 entries))))
 
 ;;; Refresh settings start here
@@ -759,34 +759,34 @@ With prefix remove all applicable downloads."
         (propertize "%b" 'face 'mode-line-buffer-id)
         " "
         (propertize
-            (concat "[" (propertize "f" 'face 'aria2-modeline-key-face) "]:add file")
+            (concat "[" (propertize "f" 'face 'aria2-modeline-key) "]:add file")
             'local-map (make-mode-line-mouse-map 'mouse-1 'aria2-add-file)
-            'mouse-face 'aria2-modeline-mouse-face)
+            'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
-            (concat "[" (propertize "u" 'face 'aria2-modeline-key-face) "]:add url")
+            (concat "[" (propertize "u" 'face 'aria2-modeline-key) "]:add url")
             'local-map (make-mode-line-mouse-map 'mouse1 'aria2-add-uris)
-            'mouse-face 'aria2-modeline-mouse-face)
+            'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
-            (concat "[" (propertize "D" 'face 'aria2-modeline-key-face) "]:remove download")
+            (concat "[" (propertize "D" 'face 'aria2-modeline-key) "]:remove download")
             'local-map (make-mode-line-mouse-map 'mouse1 'aria2-remove-download)
-            'mouse-face 'aria2-modeline-mouse-face)
+            'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
-            (concat "[" (propertize "C" 'face 'aria2-modeline-key-face) "]:clear finished")
+            (concat "[" (propertize "C" 'face 'aria2-modeline-key) "]:clear finished")
             'local-map (make-mode-line-mouse-map 'mouse1 'aria2-clean-removed-download)
-            'mouse-face 'aria2-modeline-mouse-face)
+            'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
-            (concat "[" (propertize "q" 'face 'aria2-modeline-key-face) "]:quit window")
+            (concat "[" (propertize "q" 'face 'aria2-modeline-key) "]:quit window")
             'local-map (make-mode-line-mouse-map 'mouse1 'aria2-quit)
-            'mouse-face 'aria2-modeline-mouse-face)
+            'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
-            (concat "[" (propertize "Q" 'face 'aria2-modeline-key-face) "]:kill aria2")
+            (concat "[" (propertize "Q" 'face 'aria2-modeline-key) "]:kill aria2")
             'local-map (make-mode-line-mouse-map 'mouse1 'aria2-terminate)
-            'mouse-face 'aria2-modeline-mouse-face))
+            'mouse-face 'aria2-modeline-mouse))
     "Custom mode-line for use with `aria2-mode'.")
 
 ;;; Major mode starts here
