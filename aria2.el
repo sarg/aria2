@@ -511,9 +511,6 @@ OPTIONS is an alist of opt-name and value."
                 (and (< 0 (length uris)) (file-name-nondirectory (alist-get 'uri (elt uris 0)))))
             "unknown")))
 
-(defsubst aria2--list-entries-Status (e)
-    (alist-get 'status e))
-
 (defsubst aria2--list-entries-Type (e)
     (or (and (alist-get 'bittorrent e) "bittorrent")
         (let ((uris (alist-get 'uris (elt (alist-get 'files e) 0))))
@@ -527,15 +524,9 @@ OPTIONS is an alist of opt-name and value."
             "-"
             (format "%d%%" (* 100.0 (/ completed total))))))
 
-(defsubst aria2--list-entries-Download (e)
-    (format "%.2f kB" (/ (string-to-number (alist-get 'downloadSpeed e)) 1024)))
-
-(defsubst aria2--list-entries-Upload (e)
-    (format "%.2f kB" (/ (string-to-number (alist-get 'uploadSpeed e)) 1024)))
-
-(defsubst aria2--list-entries-Size (e l)
-    (let ((len (alist-get l e)))
-        (propertize (file-size-human-readable (string-to-number len)) 'sortval (format "%10s" len))))
+(defsubst aria2--format-bytes (len s)
+    (propertize (file-size-human-readable (string-to-number len) nil "" s)
+        'sortval (format "%10s" len)))
 
 (defsubst aria2--list-entries-Err (e)
     (let ((err (alist-get 'errorCode e)))
@@ -570,7 +561,7 @@ OPTIONS is an alist of opt-name and value."
             ""
             (aria2--list-entries-Done f 'length)
             "" ""
-            (aria2--list-entries-Size f 'length)
+            (aria2--format-bytes .length "B")
             ""))))
 
 (defun aria2--list-entries ()
@@ -582,29 +573,31 @@ OPTIONS is an alist of opt-name and value."
                        (tellStopped aria2--cc nil nil aria2--tell-keys)
                        nil)))
         (dolist (e info entries)
-            (push (list
-                      (alist-get 'gid e)
-                      (vector
-                          (list (aria2--list-entries-File e) 'action #'aria2--expand-entry)
-                          (propertize (aria2--list-entries-Status e) 'face 'aria2-status)
-                          (propertize (aria2--list-entries-Type e) 'face 'aria2-type)
-                          (propertize (aria2--list-entries-Done e 'totalLength) 'face 'aria2-done)
-                          (propertize (aria2--list-entries-Download e) 'face 'aria2-download)
-                          (propertize (aria2--list-entries-Upload e) 'face 'aria2-upload)
-                          (aria2--list-entries-Size e 'totalLength)
-                          (propertize (aria2--list-entries-Err e) 'face 'aria2-error)))
-                entries)
-            (when (member (caar entries) aria2--expanded-entries)
-                (let* ((dir (alist-get 'dir e))
-                          (parent (car (aref (cadar entries) 0)))
-                          (prefix-len (+ (1+ (length dir))
-                                          (if (alist-get 'bittorrent e) (1+ (length parent)) 0))))
-                    (thread-last
-                        (alist-get 'files e)
-                        (seq-filter (lambda (f) (string= "true" (alist-get 'selected f))))
-                        (mapcar (lambda (f) (aria2--entry-file f (car entries) prefix-len)))
-                        (append entries)
-                        (setq entries)))))))
+            (let-alist e
+                (push (list
+                          .gid
+                          (vector
+                              (list (aria2--list-entries-File e) 'action #'aria2--expand-entry)
+                              (propertize .status 'face 'aria2-status)
+                              (propertize (aria2--list-entries-Type e) 'face 'aria2-type)
+                              (propertize (aria2--list-entries-Done e 'totalLength) 'face 'aria2-done)
+                              (propertize (aria2--format-bytes .downloadSpeed "Bps") 'face 'aria2-download)
+                              (propertize (aria2--format-bytes .uploadSpeed "Bps") 'face 'aria2-upload)
+                              (aria2--format-bytes .totalLength "B")
+                              (propertize (aria2--list-entries-Err e) 'face 'aria2-error)))
+                    entries)
+                (when (member (caar entries) aria2--expanded-entries)
+                    (let* ((parent (car (aref (cadar entries) 0)))
+                              (prefix-len (+ (length .dir) 1
+                                              (if (and .bittorrent (> (length .files) 1))
+                                                  (1+ (length parent))
+                                                  0))))
+                        (thread-last
+                            .files
+                            (seq-filter (lambda (f) (string= "true" (alist-get 'selected f))))
+                            (mapcar (lambda (f) (aria2--entry-file f (car entries) prefix-len)))
+                            (append entries)
+                            (setq entries))))))))
 
 ;;; Refresh settings start here
 
