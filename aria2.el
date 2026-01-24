@@ -1,11 +1,13 @@
 ;;; aria2.el --- Control aria2c commandline tool  -*- lexical-binding: t; -*-
 
 ;; Copyright (c) 2014 Łukasz Gruner
+;; Copyright (c) 2026 Sergey Trofimov
+;; SPDX-License-Identifier: Unlicense
 
 ;; Author: Łukasz Gruner <lukasz@gruner.lu>
 ;; Maintainer: Łukasz Gruner <lukasz@gruner.lu>
-;; Version: 2
-;; Package-Requires: ((emacs "26.1"))
+;; Version: 3.0
+;; Package-Requires: ((emacs "28.1"))
 ;; URL: https://github.com/ukaszg/aria2-mode
 ;; Created: 19/10/2014
 ;; Keywords: comm, files
