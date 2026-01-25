@@ -37,8 +37,8 @@
 (require 'json)
 (require 'url)
 (require 'subr-x)
-(require 'wid-edit)
 (require 'tabulated-list)
+(require 'transient)
 
 ;;; Customization variables start here.
 
@@ -337,7 +337,7 @@ When sending magnet link, URLS must have only one element."
     "Add PATH pointing at a torrent file to download list."
     (unless (file-exists-p path)
         (signal 'aria2-err-file-doesnt-exist '(path)))
-    (unless (string-match-p "\\.torrent$" path)
+    (unless (string-suffix-p ".torrent" path)
         (signal 'aria2-err-not-a-torrent-file nil))
     (make-request this "aria2.addTorrent" (aria2--base64-encode-file path) []
         `(,@(if select-file `(:select-file ,select-file) '())
@@ -713,72 +713,26 @@ OPTIONS is an alist of opt-name and value."
         (if (or (string-blank-p chosen-file)
                 (not (file-exists-p chosen-file)))
             (message "No file selected.")
-            (if (string-match-p "\\.torrent$" chosen-file)
+            (if (string-suffix-p ".torrent" chosen-file)
                 (addTorrent aria2--cc chosen-file)
                 (addMetalink aria2--cc chosen-file))))
     (revert-buffer))
 
-(defvar aria2--url-list-widget nil)
-(defconst aria2-url-list-buffer-name  "*aria2: Add http/https/ftp/magnet url(s)*"
-    "Name of a buffer for inputting url's to download.")
+(defun aria2-add-url ()
+  "Prompt for URLs and add them.
+For mirrors of the same file, separate URLs with newlines."
+  (interactive)
+  (let ((urls (read-string "Add URL(s): ")))
+    (if (string-blank-p urls)
+        (message "No URL entered.")
+      (addUri aria2--cc (string-lines urls))
+      (revert-buffer))))
 
-(defun aria2-dialog-cancel ()
-    "Close url input dialog."
-    (interactive)
-    (setq aria2--url-list-widget nil)
-    (switch-to-buffer aria2-list-buffer-name)
-    (kill-buffer aria2-url-list-buffer-name))
-
-(defun aria2-dialog-submit ()
-    "Add provided uri and close the dialog."
-    (interactive)
-    (addUri aria2--cc (widget-value aria2--url-list-widget))
-    (aria2-dialog-cancel))
-
-(defvar aria2-dialog-mode-map
-    (let ((map (make-sparse-keymap)))
-        (set-keymap-parent map widget-keymap)
-        (define-key map [mouse-1] 'widget-button-click)
-        (define-key map (kbd "C-c C-c") 'aria2-dialog-submit)
-        (define-key map (kbd "C-c C-k") 'aria2-dialog-cancel)
-        map))
-
-(defconst aria2-supported-url-protocols-regexp "\\(?:ftp://\\|http\\(?:s?://\\)\\|magnet:\\)"
-    "Regexp matching frp, http, https and magnet urls.")
-
-(define-derived-mode aria2-dialog-mode fundamental-mode "Add urls"
-    "Major moe for adding download urls.")
-
-(defun aria2-add-uris ()
-    "Display a form for inputting a list of http/https/ftp/magnet URLs."
-    (interactive)
-    (switch-to-buffer (get-buffer-create aria2-url-list-buffer-name))
-    (kill-all-local-variables)
-    (aria2-dialog-mode)
-    (let ((inhibit-read-only t)) (erase-buffer))
-    (remove-overlays)
-    (setq header-line-format (substitute-command-keys "Add urls, then download with `\\[aria2-dialog-submit]', or cancel with `\\[aria2-dialog-cancel]'"))
-    (widget-insert "Please input urls to download.\n\n")
-    (widget-insert "Non \"magnet:\" urls must be mirrors pointing to the same file.\n\n")
-    (setq aria2--url-list-widget
-        (widget-create 'editable-list
-            :entry-format "%i %d %v"
-            :value '("")
-            '(editable-field
-                 :valid-regexp aria2-supported-url-protocols-regexp
-                 :error "Url does not match supported type."
-                 :value "")))
-    (widget-insert "\n\n")
-    (widget-create 'push-button
-        :notify (lambda (&rest _) (aria2-dialog-cancel)) "Cancel")
-    (widget-insert "  ")
-    (widget-create 'push-button
-        :notify (lambda (&rest _) (aria2-dialog-submit))
-        "Download")
-    (widget-insert "\n")
-    (widget-setup)
-    (goto-char (point-min))
-    (widget-forward 3))
+(transient-define-prefix aria2-add ()
+  "Add downloads to aria2."
+  ["Add"
+   ("u" "From URL" aria2-add-url)
+   ("f" "From file" aria2-add-file)])
 
 (defun aria2-remove-download (arg)
     "Set download status to `removed'."
@@ -823,13 +777,8 @@ With prefix remove all applicable downloads."
         (propertize "%b" 'face 'mode-line-buffer-id)
         " "
         (propertize
-            (concat "[" (propertize "f" 'face 'aria2-modeline-key) "]:add file")
-            'local-map (make-mode-line-mouse-map 'mouse-1 'aria2-add-file)
-            'mouse-face 'aria2-modeline-mouse)
-        " "
-        (propertize
-            (concat "[" (propertize "u" 'face 'aria2-modeline-key) "]:add url")
-            'local-map (make-mode-line-mouse-map 'mouse1 'aria2-add-uris)
+            (concat "[" (propertize "a" 'face 'aria2-modeline-key) "]:add download")
+            'local-map (make-mode-line-mouse-map 'mouse-1 'aria2-add)
             'mouse-face 'aria2-modeline-mouse)
         " "
         (propertize
@@ -876,8 +825,7 @@ With prefix remove all applicable downloads."
         (define-key map "q" 'quit-window)
         (define-key map "Q" 'aria2-terminate)
         (define-key map "p" 'aria2-toggle-pause)
-        (define-key map "f" 'aria2-add-file)
-        (define-key map "u" 'aria2-add-uris)
+        (define-key map "a" 'aria2-add)
         (define-key map "D" 'aria2-remove-download)
         (define-key map "C" 'aria2-clean-removed-download)
         map)
@@ -888,8 +836,7 @@ With prefix remove all applicable downloads."
     (when aria2-add-evil-quirks
         (defvar evil-emacs-state-modes)
         (with-eval-after-load 'evil-states
-            (add-to-list 'evil-emacs-state-modes 'aria2-mode)
-            (add-to-list 'evil-emacs-state-modes 'aria2-dialog-mode))
+            (add-to-list 'evil-emacs-state-modes 'aria2-mode))
         (with-eval-after-load 'evil-maps
             (define-key aria2-mode-map "\C-w" 'evil-window-map))))
 
