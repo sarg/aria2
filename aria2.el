@@ -103,11 +103,6 @@ See aria2c manual for supported options."
     :type '(repeat (string :tag "Commandline argument."))
     :group 'aria2)
 
-(defcustom aria2-add-evil-quirks nil
-    "If t adds aria2-mode to emacs states, and binds C-w."
-    :type 'boolean
-    :group 'aria2)
-
 (defcustom aria2-cc-file (expand-file-name "aria2-controller.eieio" user-emacs-directory)
     "File used to persist controller status between Emacs restarts."
     :type 'file
@@ -804,42 +799,6 @@ With prefix remove all applicable downloads."
 
 ;;; Major mode starts here
 
-(defvar aria2-mode-map
-    (let ((map (make-sparse-keymap)))
-        (define-key map "j" 'next-line)
-        (define-key map "n" 'next-line)
-        (define-key map [down] 'next-line)
-        (put 'next-line :advertised-binding "n")
-        (define-key map "k" 'previous-line)
-        (define-key map "p" 'previous-line)
-        (define-key map [up] 'previous-line)
-        (put 'previous-line :advertised-binding "p")
-        (define-key map "=" 'aria2-move-up-in-list)
-        (define-key map "+" 'aria2-move-up-in-list)
-        (put 'aria2-move-up-in-list :advertised-binding "=")
-        (define-key map "-" 'aria2-move-down-in-list)
-        (define-key map "_" 'aria2-move-down-in-list)
-        (put 'aria2-move-down-in-list :advertised-binding "-")
-        (define-key map "g" 'revert-buffer)
-        (put 'revert-buffer :advertised-binding "g")
-        (define-key map "q" 'quit-window)
-        (define-key map "Q" 'aria2-terminate)
-        (define-key map "p" 'aria2-toggle-pause)
-        (define-key map "a" 'aria2-add)
-        (define-key map "D" 'aria2-remove-download)
-        (define-key map "C" 'aria2-clean-removed-download)
-        map)
-    "Keymap for `aria2-mode'.")
-
-(defun aria2-maybe-add-evil-quirks ()
-    "Install evil quirks when requested."
-    (when aria2-add-evil-quirks
-        (defvar evil-emacs-state-modes)
-        (with-eval-after-load 'evil-states
-            (add-to-list 'evil-emacs-state-modes 'aria2-mode))
-        (with-eval-after-load 'evil-maps
-            (define-key aria2-mode-map "\C-w" 'evil-window-map))))
-
 (defcustom aria2-mode-hook nil
     "Hook ran afer enabling `aria2-mode'."
     :type 'hook
@@ -875,8 +834,24 @@ With prefix remove all applicable downloads."
         (setq aria2--master-timer
             (run-at-time t 5 #'aria2--manage-refresh-timer)))
     (hl-line-mode 1)
-    (aria2-maybe-add-evil-quirks)
     (setq-local mode-line-format aria2-mode-line-format))
+
+(defvar aria2-mode-map
+    (let ((map (make-sparse-keymap)))
+        (set-keymap-parent aria2-mode-map tabulated-list-mode-map)
+        (define-key map "=" 'aria2-move-up-in-list)
+        (define-key map "+" 'aria2-move-up-in-list)
+        (put 'aria2-move-up-in-list :advertised-binding "=")
+        (define-key map "-" 'aria2-move-down-in-list)
+        (define-key map "_" 'aria2-move-down-in-list)
+        (put 'aria2-move-down-in-list :advertised-binding "-")
+        (define-key map "Q" 'aria2-terminate)
+        (define-key map "p" 'aria2-toggle-pause)
+        (define-key map "a" 'aria2-add)
+        (define-key map "D" 'aria2-remove-download)
+        (define-key map "C" 'aria2-clean-removed-download)
+        map)
+    "Keymap for `aria2-mode'.")
 
 ;;;###autoload
 (defun aria2-downloads-list ()
