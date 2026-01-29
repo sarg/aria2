@@ -6,7 +6,7 @@
 
 ;; Author: Łukasz Gruner <lukasz@gruner.lu>
 ;; Maintainer: Łukasz Gruner <lukasz@gruner.lu>
-;; Version: 3.0
+;; Version: 3.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; URL: https://github.com/ukaszg/aria2-mode
 ;; Created: 19/10/2014
@@ -304,8 +304,8 @@ See aria2c manual for supported options."
                                        (cons "jsonrpc" 2.0)
                                        (cons "id" (get-next-id this))
                                        (cons "method"  method)
-                                       (cons "params" (vconcat
-                                                          `(,(format "token:%s" (oref this secret)))
+                                       (cons "params" (apply #'vector
+                                                          (format "token:%s" (oref this secret))
                                                           (delq nil params))))))
              (url-request-extra-headers '(("Content-Type" . "application/json")))
              url-history-track
@@ -492,7 +492,7 @@ OPTIONS is an alist of opt-name and value."
     "Format for downloads list columns.")
 
 (defconst aria2--tell-keys
-    (vector "gid" "status" "totalLength" "completedLength" "downloadSpeed" "uploadSpeed" "files" "dir" "bittorrent" "errorCode")
+    ["gid" "status" "totalLength" "completedLength" "downloadSpeed" "uploadSpeed" "files" "dir" "bittorrent" "errorCode"]
     "Default list of keys for use in aria2.tell* calls.")
 
 (defvar aria2--master-timer nil
@@ -561,6 +561,14 @@ OPTIONS is an alist of opt-name and value."
             (aria2--format-bytes .length "B")
             ""))))
 
+(defvar-local aria2--completed-entries nil
+    "Completed entries.")
+
+(defcustom aria2-on-complete-hook nil
+    "Hooks to run when a download completes."
+    :group 'aria2
+    :type 'hook)
+
 (defun aria2--list-entries ()
     "Return entries to be displayed in downloads list."
     (let (entries
@@ -583,6 +591,11 @@ OPTIONS is an alist of opt-name and value."
                               (aria2--format-bytes .totalLength "B")
                               (propertize (aria2--list-entries-Err e) 'face 'aria2-error)))
                     entries)
+                (when (and (string= .status "complete")
+                          (not (member .gid aria2--completed-entries)))
+                    (ignore-errors (run-hook-with-args 'aria2-on-complete-hook e))
+                    (push .gid aria2--completed-entries))
+
                 (when (member (caar entries) aria2--expanded-entries)
                     (let* ((parent (car (aref (cadar entries) 0)))
                               (prefix-len (+ (length .dir) 1
@@ -646,25 +659,25 @@ OPTIONS is an alist of opt-name and value."
 
 (defun aria2--refresh ()
     "Refresh download list buffer.  Stop refresh timers if buffer doesn't exist."
-    (let ((buf (get-buffer aria2-list-buffer-name)))
-        (if buf
-            (with-current-buffer buf (revert-buffer))
-            (aria2--stop-timer))))
+    (if-let* ((buf (get-buffer aria2-list-buffer-name)))
+        (with-current-buffer buf (revert-buffer))
+        (aria2--stop-timer)))
 
 ;; On exit hooks start here
 (defun aria2--persist-settings-on-exit ()
     "Persist controller settings, or clear state when aria2c isn't running."
     (aria2--stop-timer)
-    (if (and aria2--cc (is-process-running aria2--cc))
-        (eieio-persistent-save aria2--cc aria2-cc-file)
-        (when (file-exists-p aria2-cc-file)
+    (cond
+        ((and aria2--cc (is-process-running aria2--cc))
+            (eieio-persistent-save aria2--cc aria2-cc-file))
+
+        ((file-exists-p aria2-cc-file)
             (delete-file aria2-cc-file))))
 
 (defun aria2--kill-on-exit ()
     "Stop aria2c process."
     (aria2--stop-timer)
-    (when aria2--cc
-        (shutdown aria2--cc t)))
+    (when aria2--cc (shutdown aria2--cc t)))
 
 ;; Interactive commands start here
 
@@ -821,6 +834,13 @@ With prefix remove all applicable downloads."
                                        :file aria2-cc-file)))))
     (when aria2-start-rpc-server
         (run-process aria2--cc))
+
+    (seq-do (lambda (e)
+                (let-alist e
+                    (when (string= .status "complete")
+                        (push .gid aria2--completed-entries))))
+        (tellStopped aria2--cc nil nil ["gid" "status"]))
+
     ;; kill process or save state on exit
     (if aria2-kill-process-on-emacs-exit
         (add-hook 'kill-emacs-hook 'aria2--kill-on-exit)
